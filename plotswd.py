@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-import logger  # user defined
+import util  # user defined
 
 try:
     import xlrd
@@ -32,8 +32,11 @@ except ImportError:
 
 
 # constants
-dlog = logger.get_logger("downloads")
-colors = ['royalblue','darkorange','grey','gold','lightcoral','yellowgreen','mediumpurple','blue','navy','firebrick']
+swdlog = util.get_logger("swdlog")
+
+barcolors = ['royalblue','darkorange','darkgray','gold','lightcoral','darkseagreen','navy','firebrick','mediumpurple']
+stackcolors = ['royalblue','darkorange','darkgray','gold','cornflowerblue','darkseagreen','navy','firebrick','mediumpurple']
+releasecolors = ['royalblue','darkorange','darkgray','gold','deepskyblue','darkseagreen','navy','firebrick','mediumpurple']
         
 
 #----------------------------------------------------------------
@@ -59,7 +62,7 @@ def get_filename(product, chartname):
     cwd = os.getcwd()
     figname = ''.join(['SWDL_', product, '_', chartname, '.png'])
     
-    filename = os.path.join(cwd, 'downloads_out', figname)
+    filename = os.path.join(cwd, 'swdout', figname)
 
     if os.path.exists(filename):
         os.remove(filename)
@@ -82,43 +85,69 @@ def set_ticklabels(ticklabels):
 
 
 #----------------------------------------------------------------
+# Set range of custom colors
+# ---------------------------------------------------------------
+def get_custom_colormap(plot_type, index_range, by_release):
+
+    if by_release:
+        colormap = releasecolors[:index_range]
+    else:
+        if plot_type == 'bar':
+            colormap = barcolors[:index_range]
+        else:
+            colormap = stackcolors[:index_range]
+    
+    return colormap
+
+
+#----------------------------------------------------------------
 # Plot bar chart for 6 months data
 # - returns string (chart name)
 #----------------------------------------------------------------
-def plot_bars_by_month(df, product):
+def plot_bar_chart(df, product, period):
     
-    dlog.info("Plotting monthly chart for {0} ......".format(product))
+    swdlog.info("Plotting bar chart {0} {1} .....".format(product, period))
 
     try:
         
         #****************#
-        # plot releases  #
+        # plot downloads #
         #****************#
+
+        width = 0.5
+        figsize = (12,8)
         
-        ax = df.plot(kind='bar', figsize=(14,8), width=0.55)    # plot 6 months of data
+        if period == '6M':
+            figsize = (14,8)
+
+        by_release = True if 'ReleaseNo' in df.columns.values.tolist() else False   
+        colormap = get_custom_colormap('bar', len(df.columns), by_release)
+
+        ax = df.plot(kind='bar', figsize=figsize, width=width, color=colormap, legend=False)
 
         fig = plt.gcf()
         plt.grid('on', linestyle='--', alpha=0.5)
 
-        months = df.index.values.tolist()           # xticks labels    
-
-        # set title font and sizes
+        # get Cisco fonts
         fontproperties = get_Cisco_font()   
-        chart_title = "All XXX Releases for last 6 Months".replace('XXX', product)
-        plt.title(chart_title, color='black', fontproperties=fontproperties, size=18, pad=-0.5)
             
-        # set ticklabels font properties
+        # set xticklabels
+        months = df.index.values.tolist()       # date labels    
         ax.set_xticklabels(months, rotation=360)
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
-    
         set_ticklabels(ax.get_xticklabels())
-        set_ticklabels(ax.get_yticklabels())
+
+        # set yticklabels
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
 
         ybot, ytop = ax.get_ylim()
         if ytop <= 10:
             ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
             for t in ax.yaxis.get_majorticklabels():
                 if t == 0: t.set_visible(False)
+
+        ax.set_ylim(bottom=0, top=ytop)
+
+        set_ticklabels(ax.get_yticklabels())
             
         # annotate bars with bar value
         rects = ax.patches
@@ -126,15 +155,11 @@ def plot_bars_by_month(df, product):
             ht = rect.get_height()
             label = "{:d}".format(int(ht))
             ax.text(rect.get_x()+rect.get_width()/2, ht, label, ha='center', va='bottom', fontweight='bold')
-            
-        # sort legend labels
-        h1, l1 = ax.get_legend_handles_labels()
-        ax.legend([h1[i] for i in range(len(h1))], [' '.join([product, l1[i]]) for i in range(len(h1))], loc='upper right', prop=fontproperties, fontsize=14)
-      
+ 
         plt.tight_layout()
 
         # save chart
-        savefile = get_filename(product, '6M')
+        savefile = get_filename(product, period)
         fig.savefig(savefile)
         
         plt.close(fig)
@@ -143,7 +168,7 @@ def plot_bars_by_month(df, product):
 
     except Exception as e:
         
-        dlog.error("Could not create chart for {0}: \n {1}".format(product, format(str(e))))
+        swdlog.error("Could not create chart for {0} {1}: \n {2}".format(product, period, format(str(e))))
         return None
 
     return savefile
@@ -153,9 +178,9 @@ def plot_bars_by_month(df, product):
 # Plot stack chart for all data
 # - returns string (chart name)
 #----------------------------------------------------------------
-def plot_stacks_by_month(df, product):
+def plot_stacked_chart(df, product, period):
     
-    dlog.info("Plotting monthly chart for {0} ......".format(product))
+    swdlog.info("Plotting stacked chart {0} {1} .....".format(product, period))
 
     try:
         
@@ -163,48 +188,59 @@ def plot_stacks_by_month(df, product):
         # plot releases  #
         #****************#
 
-        ax = df.plot(kind='bar', stacked=True, figsize=(10,8), width=0.4)
+        width = 0.5
+        figsize = (12,8)
 
+        # customize width and size of plot
+        if period[-1] in ['D', 'W']:
+            width = 0.75
+            if 'all' in period:
+                figsize = (18,9)
+                
+        by_release = True if 'ReleaseNo' in df.columns.values.tolist() else False    
+        colormap = get_custom_colormap('stack', len(df.columns), by_release)
+            
+        ax = df.plot(kind='bar', stacked=True, figsize=figsize, width=width, color=colormap, legend=False)
+        
         fig = plt.gcf()
         plt.grid('on', linestyle='--', alpha=0.5)
 
-        months = df.index.values.tolist()           # xticks labels    
-
-        # set title font and sizes
         fontproperties = get_Cisco_font()   
-        chart_title = "All XXX Releases - Last 12 Months".replace('XXX', product)
-        plt.title(chart_title, color='black', fontproperties=fontproperties, size=18, pad=-0.5)
+
+        months = df.index.values.tolist()   # date labels 
             
-        # set ticklabels font properties
-        ax.set_xticklabels(months, rotation=360)
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
-    
-        set_ticklabels(ax.get_xticklabels())
+        # set xticklabels
+        if period == "6M":            
+            ax.set_xticklabels(months, rotation=360)
+            set_ticklabels(ax.get_xticklabels())
+            
+        elif period in ["12M", "18M", "6W"]:
+            set_ticklabels(ax.get_xticklabels())
+            
+        else:
+            interval = 7        # show labels at 7 days/weeks 
+            ax.set_xticks(ax.get_xticks()[::interval])
+            xlabels = [m for i, m in enumerate(months) if i%interval ==0]
+            ax.set_xticklabels(xlabels)
+            set_ticklabels(ax.get_xticklabels())
+         
+        # set yticklabels
+        yticks = ax.get_yticks().tolist()
+        ax.set_ylim(bottom=0, top=max(yticks))
         set_ticklabels(ax.get_yticklabels())
 
-        ybot, ytop = ax.get_ylim()
-        if ytop <= 10:
-            ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
-            for t in ax.yaxis.get_majorticklabels():
-                if t == 0: t.set_visible(False)
-      
-        # sort legend labels
-        h1, l1 = ax.get_legend_handles_labels()
-        ax.legend([h1[i] for i in range(len(h1))], [' '.join([product, l1[i]]) for i in range(len(h1))], loc='upper right', prop=fontproperties, fontsize=14)
-      
         plt.tight_layout()
 
         # save chart
-        savefile = get_filename(product, '12M')
+        savefile = get_filename(product, period)
         fig.savefig(savefile)
         
         plt.close(fig)
 
-        #plt.show()
 
     except Exception as e:
         
-        dlog.error("Could not create chart for {0}: \n {1}".format(product, format(str(e))))
+        swdlog.error("Could not create chart for {0} {1}: \n {2}".format(product, period, format(str(e))))
         return None
 
     return savefile

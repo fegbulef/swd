@@ -5,7 +5,7 @@ Created by:   Fiona Egbulefu (Contractor)
 
 Created date: 10 June 2019
 
-Description:  Main script to automate KPI charts for 'Downloads'
+Description:  Main script to automate KPI charts for 'Software Downloads'
               - Calls module to import raw data
               - Calls module to build charts
 
@@ -13,156 +13,124 @@ Description:  Main script to automate KPI charts for 'Downloads'
 
 import os
 import sys
-import json
-
-import requests
-import warnings
-
-from datetime import datetime
 
 try:
     import pandas as pd
+    import warnings
     
-except ImportError:
-    print("Please install the python 'pandas' and 'xlrd' modules")
+except ImportError as e:
+    print("Import error: {}".format(str(e)))
     sys.exit(-1)
 
 # user defined modules
-import logger
-import plotdownloads
-import importdownloads
+import util
+import plotswd
+import prepswd
 
 
+# ------
+# Setup
+# ------
 
-#****************************
-# Downloads constants
-#****************************
+swdlog = util.setup_logger("swdlog", "swdlog.log")
 
-downloads_file = r'data\SWDL_Sample.xlsx'
-downloads_sheet = r'SWDownloads-123'        #'SW_Downloads_by_Filename-8'
+swdfile = r'data\SWDL_data.xlsx'
+swdsheet = r'SWDownloads-123'           
 
-products = {'CMS': 'Server', 'CMM': 'Management', 'CMA': 'Client'}
+products = {'CMS': 'Server', 'CMA': 'Client', 'CMM': 'Management'}
 
 
 #-------------------------------------------------------------
-# Find release/version number within filename
-# - returns string (release/version)
+# Import data from a defined sheet in a given Excel workbook
+# - returns DataFrame structure 
 #-------------------------------------------------------------
-def get_release_number(file):
+def import_from_excel(xlfile, xlsheet):
 
-    num = ''
-    release = ''
+    import_df = None
+
+    if not xlfile or not xlsheet:
+        swdlog.error("Excel filename and sheetname required for import")
+        return import_df
     
-    for i, c in enumerate(file):
-
-        # build version number
-        if c.isdigit():
-            num = ''.join([num, c])
-            continue
-
-        # build release number
-        if num:
-            release = num if release == '' else ''.join([release, '.', num])
-
-            if len(release.split('.')) == 2:   # release/version complete e.g. 2.0
-                break
-
-            num = ''    # reset num
-
-    return release
-
-
-#-------------------------------------------------------------
-# Get data for downloads
-# - returns Dataframe structure
-#-------------------------------------------------------------
-def group_data_by_month_and_release(df_product):
-
-    productgrp = {}
-
-    # build dict by date
-    for i in df_product.index:
-        month = df_product.DownloadMonth[i]
-        file = df_product.DownloadFile[i]
-
-        if not month in productgrp:
-            productgrp[month] = {}
-
-        # get release/version count
-        release = get_release_number(file)
-        if not release in productgrp[month]:
-            productgrp[month][release] = 1
-        else:
-            productgrp[month][release] += 1 
+    try:
     
-    # convert to dataframe
-    df = pd.DataFrame(productgrp)
-    df = df.transpose()    # place dates as row headers
-
-    # sort columns by release
-    cols = df.columns.values.tolist()
-    for i in range(len(cols)):
-        for j in range(i+1, len(cols)):
-            if int(cols[i].replace('.','')) > int(cols[j].replace('.','')):
-                temp = cols[i]
-                cols[i], cols[j] = cols[j], temp
-
-
-    df_download = df[cols]
-    df_download.fillna(0, inplace=True) 
-    
-    dlog.debug("download group: {}".format(len(df_download)))
-               
-    return df_download
-
-    
-#-------------------------------------------------------------
-# Get data for downloads
-# - returns Dataframe structure
-#-------------------------------------------------------------
-def process_downloads(fromexcel=True):
-
-    xlfile = os.path.join(os.getcwd(), downloads_file)
-
-    # import data
-    if fromexcel:
-        import_df = importdownloads.import_from_excel(xlfile, downloads_sheet)
-    else:
-        import_df = importdownloads.import_from_api()
+        # import Excel data from specific workbook and sheet; ignore xlrd warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            import_df = pd.read_excel(xlfile, xlsheet)
+            
+    except Exception as e:
+        swdlog.error("Exception: {}".format(str(e)))
 
 
     if not import_df is None:
+        swdlog.info("Imported records: {}".format(len(import_df)))
 
-        downloads_df = importdownloads.filter_downloads(import_df)
+    return import_df
 
-        # get counts by product/ date(MMM-YYYY)/ version
-        for pcode, pname in products.items():
-            dlog.info("Processing {}:....".format(pcode))
 
-            product_filter = downloads_df.apply(lambda x: x.Product == pcode, axis=1)
-            df_product = downloads_df[product_filter]
+#-------------------------------------------------------------
+# Get data for downloads
+# - returns Dataframe structure
+#-------------------------------------------------------------
+def main():
 
-            if len(df_product) == 0:
-                dlog.warning("No data found for {}".format(pcode))
-                
-            else:
-                df_plot = group_data_by_month_and_release(df_product)
-                #print("\n\n{0} Download:\n {1}".format(pcode, df_plot))
+    xlfile = os.path.join(os.getcwd(), swdfile)
 
-                # plot last six months as bar chart
-                plot_start = len(df_plot)-6
-                kpi_chart = plotdownloads.plot_bars_by_month(df_plot[plot_start:], pcode)
-                if kpi_chart:
-                    dlog.info("Monthly chart created for {0}: {1}".format(pcode, kpi_chart))
+    # import data
+    import_df = import_from_excel(xlfile, swdsheet)
+    if import_df is None:
+        swdlog.warning("No download data available!")
+        return
 
-                kpi_chart = plotdownloads.plot_stacks_by_month(df_plot, pcode)
-                if kpi_chart:
-                    dlog.info("yearly chart created for {0}: {1}".format(pcode, kpi_chart))
-                    
-    else:
+    swd_df = prepswd.filter_downloads(import_df)
+    
+    #=============================
+    # Plot KPIs for all Products
+    #=============================
 
-        dlog.warning("No download data available!")
+    for period in ['18M', '6M', '6W', '6D', 'allW']:
 
+        df_plot = prepswd.group_data_by_date(swd_df, period)
+    
+        swdlog.info("Plot KPI: All products for period {0}".format(period))
+
+        # plot kpi as single/stacked bars
+        if period in ['18M', '6D', '6W', 'allW']:
+            kpi_chart = plotswd.plot_stacked_chart(df_plot[['CMS','CMA','CMM']], "allStacked", period)
+        else:
+            kpi_chart = plotswd.plot_bar_chart(df_plot[['CMS','CMA','CMM']], "allBars", period)
+
+        if kpi_chart:
+            swdlog.info("Chart created for all products: {0}".format(kpi_chart))
+
+
+    #========================
+    # Plot kpis for CMS 
+    #========================
+
+    # filter data for 'CMS'
+    product_filter = swd_df.apply(lambda x: x.Product == 'CMS', axis=1)     
+    df_product = swd_df[product_filter]
+
+    if len(df_product) == 0:
+        swdlog.warning("No data found for 'CMS'".format(pcode))
+        return 
+
+    for period in ['18M', '6M', '6W', '6D', 'allW']:
+        
+        df_plot = prepswd.group_data_by_date(df_product, period, True)
+        
+        # plot kpi as single/stacked bars
+        if period in ['18M', '6D', '6W', 'allW']:
+            kpi_chart = plotswd.plot_stacked_chart(df_plot, "CMSStacked", period)
+        else:
+            kpi_chart = plotswd.plot_bar_chart(df_plot, "CMSBars", period)
+
+        if kpi_chart:
+            swdlog.info("Chart created for all products: {0}".format(kpi_chart))
+                        
 
     return
 
@@ -172,10 +140,11 @@ def process_downloads(fromexcel=True):
 # M A I N   #
 #***********#
 
-dlog = logger.setup_logger("downloads", "swdlog.log")
-dlog.info("Started.......")
+if __name__ == "__main__":
+    
+    swdlog.info("Start Software Downloads automation.......")
 
-process_downloads(fromexcel=True)
+    main()
 
-dlog.info("Finished!")
+    swdlog.info("Finished!")
     
