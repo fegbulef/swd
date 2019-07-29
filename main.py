@@ -22,22 +22,25 @@ except ImportError as e:
     print("Import error: {}".format(str(e)))
     sys.exit(-1)
 
+
 # user defined modules
 import util
-import plotswd
-import prepswd
+import plotswdl
+import prepswdl
 
 
-# ------
-# Setup
-# ------
+# --------- #
+# Constants #
+# --------- #
 
-swdlog = util.setup_logger("swdlog", "swdlog.log")
+PRODUCTS = {"CMS": "Cisco Meeting Server", "CMA": "Cisco Meeting App", "CMM": "Cisco Meeting Manager"}
 
-swdfile = r'data\SWDL_data.xlsx'
-swdsheet = r'SWDownloads-123'           
+SWDLFILE = r'data\SWDL_data.xlsx'
+SWDLSHEET = r'SWDownloads-123'           
 
-products = {'CMS': 'Server', 'CMA': 'Client', 'CMM': 'Management'}
+# setup log
+swdllog = util.setup_logger("swdllog", "swdllog.log")
+
 
 
 #-------------------------------------------------------------
@@ -49,7 +52,7 @@ def import_from_excel(xlfile, xlsheet):
     import_df = None
 
     if not xlfile or not xlsheet:
-        swdlog.error("Excel filename and sheetname required for import")
+        swdllog.error("Excel filename and sheetname required for import")
         return import_df
     
     try:
@@ -61,11 +64,11 @@ def import_from_excel(xlfile, xlsheet):
             import_df = pd.read_excel(xlfile, xlsheet)
             
     except Exception as e:
-        swdlog.error("Exception: {}".format(str(e)))
+        swdllog.error("Exception: {}".format(str(e)))
 
 
     if not import_df is None:
-        swdlog.info("Imported records: {}".format(len(import_df)))
+        swdllog.info("Imported records: {}".format(len(import_df)))
 
     return import_df
 
@@ -76,60 +79,57 @@ def import_from_excel(xlfile, xlsheet):
 #-------------------------------------------------------------
 def main():
 
-    xlfile = os.path.join(os.getcwd(), swdfile)
+    xlfile = os.path.join(os.getcwd(), SWDLFILE)
 
     # import data
-    import_df = import_from_excel(xlfile, swdsheet)
+    import_df = import_from_excel(xlfile, SWDLSHEET)
     if import_df is None:
-        swdlog.warning("No download data available!")
+        swdllog.warning("No download data available!")
         return
 
-    swd_df = prepswd.filter_downloads(import_df)
+    swdl_df = prepswdl.filter_downloads(import_df)
     
     #=============================
     # Plot KPIs for all Products
     #=============================
 
     for period in ['18M', '6M', '6W', '6D', 'allW']:
-
-        df_plot = prepswd.group_data_by_date(swd_df, period)
+       
+        df_plot = prepswdl.group_data_by_date(swdl_df, period)
     
-        swdlog.info("Plot KPI: All products for period {0}".format(period))
+        swdllog.info("Plot KPI: All products for period {0}".format(period))
 
         # plot kpi as single/stacked bars
         if period in ['18M', '6D', '6W', 'allW']:
-            kpi_chart = plotswd.plot_stacked_chart(df_plot[['CMS','CMA','CMM']], "allStacked", period)
+            kpi_chart = plotswdl.plot_stacked_chart(df_plot[['CMS','CMA','CMM']], "allProducts", period)
         else:
-            kpi_chart = plotswd.plot_bar_chart(df_plot[['CMS','CMA','CMM']], "allBars", period)
+            kpi_chart = plotswdl.plot_bar_chart(df_plot[['CMS','CMA','CMM']], "allProducts", period)
 
         if kpi_chart:
-            swdlog.info("Chart created for all products: {0}".format(kpi_chart))
+            swdllog.info("Chart created for all products: {0}".format(kpi_chart))
 
 
     #========================
-    # Plot kpis for CMS 
+    # Plot kpis by Product 
     #========================
 
-    # filter data for 'CMS'
-    product_filter = swd_df.apply(lambda x: x.Product == 'CMS', axis=1)     
-    df_product = swd_df[product_filter]
-
-    if len(df_product) == 0:
-        swdlog.warning("No data found for 'CMS'".format(pcode))
-        return 
-
-    for period in ['18M', '6M', '6W', '6D', 'allW']:
+    for product in PRODUCTS:
         
-        df_plot = prepswd.group_data_by_date(df_product, period, True)
-        
-        # plot kpi as single/stacked bars
-        if period in ['18M', '6D', '6W', 'allW']:
-            kpi_chart = plotswd.plot_stacked_chart(df_plot, "CMSStacked", period)
-        else:
-            kpi_chart = plotswd.plot_bar_chart(df_plot, "CMSBars", period)
+        # filter data by product
+        pfilter = swdl_df.apply(lambda x: x.Product == product, axis=1)     
+        df_product = swdl_df[pfilter]
 
-        if kpi_chart:
-            swdlog.info("Chart created for all products: {0}".format(kpi_chart))
+        if len(df_product) == 0:
+            swdllog.warning("No data found for {}".format(PRODUCTS[product]))
+            continue 
+
+        for period in ['12W', '18M', 'allW']:
+           
+            df_plot = prepswdl.group_data_by_date(df_product, period, product)
+  
+            kpi_chart = plotswdl.plot_stacked_chart(df_plot, product, period)
+            if kpi_chart:
+                swdllog.info("Chart created for {0} {1}: {2}".format(product, period, kpi_chart))
                         
 
     return
@@ -142,9 +142,9 @@ def main():
 
 if __name__ == "__main__":
     
-    swdlog.info("Start Software Downloads automation.......")
+    swdllog.info("Start Software Downloads automation.......")
 
     main()
 
-    swdlog.info("Finished!")
+    swdllog.info("Finished!")
     

@@ -24,17 +24,20 @@ except ImportError:
     print("Please install the python 'pandas' and 'xlrd' modules")
     sys.exit(-1)
 
-
 import util   # user defined module
 
 
-# -------
-# Setup
-# -------
+# ---------- #
+# Constants  #
+# ---------- #
 
-swdlog = util.get_logger("swdlog")
+SWDL_STARTDATE = datetime(2016, 8, 1)   # start date used to process 'all' data
+SWDL_TYPES = ['1 - Registered Guest', '2 - Customer', '3 - Partner']
 
-swd_type = ['1 - Registered Guest', '2 - Customer', '3 - Partner']
+
+# setup log
+swdllog = util.get_logger("swdllog")
+
 
 
 #-------------------------------------------------------------
@@ -45,7 +48,9 @@ def get_start_end_dates(mths):
     end_dt = util.get_next_date(datetime(date.today().year, date.today().month, 1), 0, -1)
     start_dt = util.get_next_date(end_dt, mths, 0)
     start_dt = datetime(start_dt.year, start_dt.month, 1)   # get start of month
-    
+
+    swdllog.debug("Start month: {0} End month: {1}".format(start_dt, end_dt))
+       
     return start_dt, end_dt
 
 
@@ -60,7 +65,7 @@ def get_start_end_weeks(df, datecol):
     dt = pd.to_datetime(str(max(list(df[datecol].values))))
     end_dt = datetime.strptime(dt.strftime("%d/%m/%Y"), "%d/%m/%Y")
 
-    swdlog.debug("Start week: {0} End week: {1}".format(start_dt, end_dt))
+    swdllog.debug("Start week: {0} End week: {1}".format(start_dt, end_dt))
     
     return start_dt, end_dt
 
@@ -97,6 +102,98 @@ def sort_df_by_date(df, column, datefmt):
 
 
 #-------------------------------------------------------------
+# Returned sorted list by release numbers
+#-------------------------------------------------------------
+def sort_releaseno_list(listnum):
+
+    tmp = None
+    for i in range(len(listnum)):
+        tmpi = int(''.join(listnum[i].split('.')))
+        
+        for j in range(i+1, len(listnum)):
+            tmpj = int(''.join(listnum[j].split('.')))
+
+            if tmpi > tmpj:
+                tmp = listnum[i]
+                listnum[i] = listnum[j]
+                listnum[j] = tmp
+            
+    #print("Sorted release:", listnum)
+    return listnum
+
+
+#-------------------------------------------------------------
+# Group CMS releases and identify major releases to plot
+# - returns DataFrame structure
+#-------------------------------------------------------------
+def group_cms_releases(df):
+
+    minor_r = []
+
+    # identify all minor releases and group under new release name
+    rcnt = 1
+    prev_r = None
+    
+    for i, release in enumerate(df.ReleaseNo.values.tolist()[::-1]):
+        split_r = release.split('.')
+
+        if i > 0:
+            if not (split_r[0] == prev_r[0] and split_r[1] == prev_r[1]):
+                rcnt += 1
+                if rcnt > 3:  
+                    minor_r.append('.'.join([split_r[0], split_r[1], 'x']))    # e.g. '2.1.x' 
+
+        prev_r = split_r
+        
+          
+    # sum minor releases then delete from df
+    minor_r_sum = {'ReleaseNo':[], 'ReleaseCnt':[]}
+    for r in minor_r[::-1]:
+        rfilter = df.ReleaseNo.map(lambda x: x.startswith(r[:-2]))
+        minor_r_sum['ReleaseNo'].append(r)
+        minor_r_sum['ReleaseCnt'].append(df[rfilter].ReleaseCnt.sum())
+        df = df[~rfilter]   # remove all minor releases
+
+    # append minor sums with grouped release names to df
+    df_minor_r = pd.DataFrame(minor_r_sum)
+    df = df_minor_r.append(df, ignore_index=True)
+
+
+    return df
+
+
+#-------------------------------------------------------------
+# Group products by day/week/month
+# - returns Dataframe structure
+#-------------------------------------------------------------
+def group_data_by_release(df, period, product):
+
+    df_data = df
+    
+    # set start/end of period
+    if not 'all' in period:
+        mths = int(period[:-1])-1
+        start_dt, end_dt = get_start_end_dates(-mths)
+        df_data = df[(df.DownloadDate >= pd.to_datetime(start_dt)) & (df.DownloadDate <= pd.to_datetime(end_dt))]
+   
+    df_grouped = df_data.groupby("ReleaseNo").size().reset_index(name="ReleaseCnt")
+    df_grouped.fillna(0, inplace=True)
+    
+    # group major releases for CMS
+    if product == 'CMS':
+        df_grouped = group_cms_releases(df_grouped)
+
+    df_grouped.reset_index(inplace=True)
+    df_grouped.set_index("ReleaseNo", inplace=True)
+
+    if 'index' in df_grouped.columns:      # drop index column created by assign
+        df_grouped.drop('index', axis=1, inplace=True)
+
+
+    return df_grouped
+
+   
+#-------------------------------------------------------------
 # Grroup data by week
 # - returns Dataframe structure
 #-------------------------------------------------------------
@@ -112,6 +209,11 @@ def group_data_by_week(df, keydate, wkstart, wkend, keycol, keycnt):
             dt = df[keydate][i].date()
             key = df[keycol][i]
 
+            if keycol == "ReleaseNo":
+                if not key.replace('.','').isdigit() \
+                   or key.split('.')[0] == '0':         # not a valid number
+                    continue
+            
             if not key in grp_data[wk]:    # by Product / ReleaseNo
                 grp_data[wk][key] = 0
         
@@ -136,7 +238,8 @@ def group_data_by_day_month(df, keydate, keycol, keycnt):
 
         # check for valid releaseno's
         if keycol == "ReleaseNo":
-            if not key.replace('.','').isdigit():   # not a valid number
+            if not key.replace('.','').isdigit() \
+               or key.split('.')[0] == '0':         # not a valid number
                 continue
 
         if not dt in grp_data:          # by day/month
@@ -154,7 +257,7 @@ def group_data_by_day_month(df, keydate, keycol, keycnt):
 # Grroup products by day/week/month
 # - returns Dataframe structure
 #-------------------------------------------------------------
-def group_data_by_date(df, period, grp_by_release=False):
+def group_data_by_date(df, period, product=None):
 
     df_data = df
 
@@ -173,28 +276,24 @@ def group_data_by_date(df, period, grp_by_release=False):
             mths = int(period[:-1])-1
             start_dt, end_dt = get_start_end_dates(-mths)
 
-        swdlog.debug("By week period: {0} {1}".format(start_dt, end_dt))
+        swdllog.debug("By week period: {0} {1}".format(start_dt, end_dt))
         wkstart, wkend = get_period_weeks(start_dt, end_dt)
 
-    # set key column for grouping data 
+    # set key columns for grouping data
+    grp_data = {}
+
     keydate = "DownloadMonth"
     if period[-1] in ['D', 'W']:
         keydate = "DownloadDate"
 
-    if grp_by_release:
-        df_grp = df_data[[keydate, "ReleaseNo"]].groupby([keydate, "ReleaseNo"]).size().reset_index(name="ReleaseCnt")
-    else:
-        df_grp = df_data[[keydate, "Product"]].groupby([keydate, "Product"]).size().reset_index(name="ProductCnt")
-
-    grp_data = {}
-
-    # set key cols for regrouping
-    if grp_by_release:
+    if product:
         keycol = "ReleaseNo"
         keycnt = "ReleaseCnt"
     else:
         keycol = "Product"
         keycnt = "ProductCnt"
+        
+    df_grp = df_data[[keydate, keycol]].groupby([keydate, keycol]).size().reset_index(name=keycnt)
 
     # reformat grouped data
     if period[-1] in ['D', 'M']:
@@ -204,7 +303,6 @@ def group_data_by_date(df, period, grp_by_release=False):
 
     df_grouped = pd.DataFrame(grp_data)
     df_grouped.fillna(0, inplace=True)
-    #print("Grp:\n", df_grouped.head())
 
     # reformat dates colummns
     if period[-1] == 'D':
@@ -233,13 +331,15 @@ def group_data_by_date(df, period, grp_by_release=False):
     df_grouped = df_grouped.transpose()   
   
     # if grouping by release, sort release numbers and append product ('CMS') name
-    if grp_by_release:
-        rcols = pd.DataFrame(df_grouped.columns.values.tolist(), columns=["R"])
-        rstr = 'CMS ' + rcols.R
-        rcols = rcols.assign(R=rstr)
-        df_grouped.columns = rcols.R.values.tolist()
+    if product:
+        sort_cols = sort_releaseno_list(df_grouped.columns.values.tolist())
+        df_grouped = df_grouped[sort_cols]              # display columns in sorted order 
+        rcols = pd.DataFrame(sort_cols, columns=["R"]) 
+        rstr = product + ' ' + rcols.R
+        rcols = rcols.assign(R=rstr)  
+        df_grouped.columns = rcols.R.values.tolist()    # prefix product to column name            
     
-    #print("\nGrouped data for", period, ":\n", df_grouped.head())
+    #print("\nFinal Grouping for period", period, ":\n", df_grouped)
     return df_grouped
    
 
@@ -257,10 +357,10 @@ def apply_filters(df):
     invalidfile = df['Full File Name'].map(lambda x: x.endswith('Cisco_Meeting.dmg'))
     df = df[~invalidfile]
     
-    # set date filter: from 1-Aug-2016
-    start_dt = datetime(2016, 8, 1)
+    # set date filter
+    start_dt = SWDL_STARTDATE
     end_dt = util.get_next_date(datetime(date.today().year, date.today().month, 1), 0, -1)  # end of prev. month
-    swdlog.debug("Filter dates: {0} - {1}".format(start_dt, end_dt))
+    swdllog.debug("Filter dates: {0} - {1}".format(start_dt, end_dt))
 
     # get last 12 months of data
     swd_date = pd.to_datetime(df['Download Date and Time'], format="%d/%m/%Y %HH:%MM:%SS", errors='coerce')
@@ -269,12 +369,12 @@ def apply_filters(df):
     df_filtered = df[(df.DownloadDate >= pd.to_datetime(start_dt)) & (df.DownloadDate <= pd.to_datetime(end_dt))]
 
     # select only 'Customer' and 'Partner' records
-    access_level = df_filtered.apply(lambda x: x['Access Level Name'] in swd_type, axis=1)
+    access_level = df_filtered['Access Level Name'].apply(lambda x: x in SWDL_TYPES)
     df_filtered = df_filtered[access_level]
 
     df_filtered.reset_index(inplace=True)
 
-    swdlog.debug("Filtered records: {0}".format(len(df_filtered)))
+    swdllog.debug("Filtered records: {0}".format(len(df_filtered)))
     
     return df_filtered
 
@@ -299,6 +399,7 @@ def decode_filename(df):
     # split filename into columns
     filesplit = pd.DataFrame(df.DownloadFile.str.split('_', 4, expand=True))
     filesplit.columns = ['Product', 'R', 'V', 'M', 'Ext']
+    #filesplit.to_csv("filesplit.csv", sep=',')
 
 
     try:
@@ -320,21 +421,28 @@ def decode_filename(df):
             
             else:
                 df_dict['Product'][i] = filesplit.Product[i]
-                df_dict['R'][i] = filesplit.R[i]       # should always be valid - major version
+                if filesplit.R[i] is None:
+                    df_dict['R'][i] = '0'
+                else:
+                    df_dict['R'][i] = filesplit.R[i]  
 
 
             # decode 'V'
             if not filesplit.V[i] is None:
 
-                if filesplit.V[i].isdigit():
-                    df_dict['V'][i] = filesplit.V[i]
+                if df_dict['V'][i] is None:         # not already assigned from above
 
-                else:
-                    ver = filesplit.V[i].split('.')
+                    if filesplit.V[i].isdigit():
+                        df_dict['V'][i] = filesplit.V[i]
+                    else:
+                        ver = filesplit.V[i].split('.')
 
-                    if len(ver) > 1:
-                        df_dict['V'][i] = ver[0]
-                        df_dict['Type'][i] = ver[1]    
+                        if len(ver) > 1:
+                            df_dict['V'][i] = ver[0]
+                            df_dict['Type'][i] = ver[1]
+                        else:
+                            df_dict['V'][i] = '0'
+                            
             else:
                 df_dict['V'][i] = '0'
 
@@ -358,7 +466,22 @@ def decode_filename(df):
                         df_dict['Type'][i] = ver[1]
                     
             else:
-                df_dict['M'][i] = '0'
+
+                if not df_dict['M'][i] is None:
+
+                    if not df_dict['M'][i].isdigit():
+                        ver = df_dict['M'][i].split('.')
+
+                        if ver[0].isdigit():
+                            df_dict['M'][i] = ver[0]
+                            df_dict['Type'][i] = ver[1]
+                        else:
+                            df_dict['M'][i] = '0'
+                            df_dict['Ext'][i] = ver[0]
+                            df_dict['Type'][i] = ver[1]
+
+                else:
+                    df_dict['M'][i] = '0'
         
 
             # decode 'Ext'
@@ -369,12 +492,12 @@ def decode_filename(df):
 
 
     except Exception as e:
-        swdlog.error("Unable to decode file - {}".format(str(e)))
+        swdllog.error("Unable to decode file - {}".format(str(e)))
 
     decode_df = pd.DataFrame(df_dict)
     decode_df.reset_index(inplace=True)
     
-    swdlog.info("Downloadfile decoded records: {}".format(len(decode_df)))
+    swdllog.info("Downloadfile decoded records: {}".format(len(decode_df)))
 
     return decode_df
 
@@ -478,15 +601,15 @@ def filter_downloads(import_df):
     if 'index' in df.columns:      # drop index column created by assign
         df.drop('index', axis=1, inplace=True)
 
-    swdlog.info("Cleaned data: {}".format(len(df)))
+    swdllog.info("Cleaned data: {}".format(len(df)))
 
-    # extract file details to save to file 
+    # extract file details to file 
     export_df = get_export_downloadfile(df[['DownloadFile', 'Product', 'DownloadMonth']])
-    savefile = os.path.join(os.getcwd(), "swdout", "exportswd.csv")
-    export_df.to_csv(savefile, sep=',')
+    exportfile = os.path.join(os.getcwd(), "swdlout", "exportswdl.csv")
+    export_df.to_csv(exportfile, sep=',')
     
-    # create 'ReleaseNo' column from export_df R & V columns
-    release = export_df.R.map(str) + "." + export_df.V.map(str) # + "." + export_df.M.map(str)
+    # create 'ReleaseNo' column from export_df: R.V
+    release = export_df.R.map(str) + "." + export_df.V.map(str)     # + "." + export_df.M.map(str)
     df = df.assign(ReleaseNo=release) 
     
    
