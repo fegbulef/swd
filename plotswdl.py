@@ -94,7 +94,7 @@ def setup_plot(product, period, xlim, plot_type):
         ax.spines['top'].set_visible(False)
         ax.grid(True, which='major', axis='y', linestyle='-', alpha=0.4)
 
-        plt.title(PRODUCTS[product], color='darkgray', fontproperties=custom_font)
+        plt.title(PRODUCTS[product], color='darkgray', fontsize=16, fontproperties=custom_font)
         
     else:
         plt.grid('on', linestyle='--', alpha=0.5)
@@ -104,7 +104,7 @@ def setup_plot(product, period, xlim, plot_type):
 
     for label in (ax.get_xticklabels() + ax .get_yticklabels()):
         label.set_fontproperties(custom_font)
-        label.set_fontsize(12)
+        label.set_fontsize(10)
         
     return plt, fig, ax
 

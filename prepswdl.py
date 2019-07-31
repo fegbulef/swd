@@ -606,7 +606,7 @@ def filter_downloads(import_df):
     # extract file details to file 
     export_df = get_export_downloadfile(df[['DownloadFile', 'Product', 'DownloadMonth']])
     exportfile = os.path.join(os.getcwd(), "swdlout", "exportswdl.csv")
-    export_df.to_csv(exportfile, sep=',')
+    export_df.to_csv(exportfile, sep=',', index=False)
     
     # create 'ReleaseNo' column from export_df: R.V
     release = export_df.R.map(str) + "." + export_df.V.map(str)     # + "." + export_df.M.map(str)
